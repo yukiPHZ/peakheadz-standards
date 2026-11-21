@@ -13,7 +13,7 @@ PEAKHEADZ製品で繰り返し使う、開発・品質・文章・ブランド�
 
 - `common/`: 全製品に共通する作業・文章・ブランド
 - `app/`: Windows / デスクトップアプリの共通仕様
-- `web/`: 将来のWeb実証用の最小の器。現時点ではWeb品質を確定しません
+- `web/`: Web製品の品質、UI、footer、deployに共通する境界
 - `tools/quality_check.py`: 製品をprofile別に検査
 - `tools/generate_ai_context.py`: 指定した正本見出しからAI用入口を生成
 
@@ -21,6 +21,7 @@ PEAKHEADZ製品で繰り返し使う、開発・品質・文章・ブランド�
 
 ```powershell
 python tools/quality_check.py <product-root> --profile app
+python tools/quality_check.py <product-root> --profile web
 python tools/generate_ai_context.py <product-root>
 python tools/generate_ai_context.py <product-root> --check
 ```
@@ -29,4 +30,8 @@ python tools/generate_ai_context.py <product-root> --check
 
 ## Version
 
-初版: `1.0.0`
+基準点: `v1.0.0`
+
+App 1製品とWeb 2製品で、`common`、profile、製品固有正本、quality check、AI contextの境界を実証した初回安定版です。今後は実運用で必要性が確認できた変更だけを加えます。
+
+実証結果は `PILOT_DAKE_PDF_CHECKSTAMP.md`、`PILOT_SHIMARISU_REAL_ESTATE.md`、`PILOT_DAKEAPP.md` に簡潔に記録しています。

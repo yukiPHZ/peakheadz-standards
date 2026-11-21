@@ -185,12 +185,12 @@ def add_required_text_findings(findings: list[Finding], target: Path, config: di
         label = str(item.get("label") or item["text"])
         shown = display_path(path, target)
         if not path.is_file():
-            findings.append(Finding("FAIL", "APP002", shown, f"{label}の確認先がありません"))
+            findings.append(Finding("FAIL", "CORE004", shown, f"{label}の確認先がありません"))
             continue
         try:
             text = cache.setdefault(path.resolve(), path.read_text(encoding="utf-8-sig", errors="replace"))
         except OSError as exc:
-            findings.append(Finding("FAIL", "APP002", shown, f"{label}を確認できません: {exc}"))
+            findings.append(Finding("FAIL", "CORE004", shown, f"{label}を確認できません: {exc}"))
             continue
         if item["text"] in text:
             findings.append(Finding("PASS", "CORE004", shown, f"{label}を確認しました"))

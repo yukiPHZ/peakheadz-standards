@@ -7,4 +7,4 @@
 - `AI_CONTEXT.md` の直接編集を認めません。
 - checkerの `FAIL` は機械判定できる違反、`WARN` は文脈確認が必要な候補に限定します。
 - tool変更後は `python -m unittest discover -s tests -v` を実行します。
-- Web実証前に `web/` を想像で拡張しません。
+- `web/` は実製品で確認した共通事項だけを扱い、将来用途を想像して拡張しません。
