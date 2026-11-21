@@ -78,6 +78,39 @@ class QualityCheckTests(unittest.TestCase):
             findings = quality_check.run_checks(root, "app", config)
             self.assertFalse(any(item.severity == "FAIL" for item in findings))
 
+    def test_web_globs_check_every_html_file_and_ignore_script_text(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            public = root / "public"
+            public.mkdir()
+            (root / "README.md").write_text("# Readme\n", encoding="utf-8")
+            (public / "index.html").write_text(
+                '<html lang="ja"><head><title>Home</title></head><body>穏やかな案内<script>throw new Exception()</script></body></html>',
+                encoding="utf-8",
+            )
+            (public / "about.html").write_text(
+                '<html lang="ja"><head><title>About</title></head><body>概要</body></html>',
+                encoding="utf-8",
+            )
+            config = {
+                "profile": "web",
+                "required_files": ["README.md", "public/index.html"],
+                "scan_globs": ["public/**/*.html"],
+                "user_text_globs": ["public/**/*.html"],
+                "required_text_globs": [
+                    {"glob": "public/**/*.html", "text": "<title>", "label": "title"}
+                ],
+            }
+            path = root / "peakheadz_quality.json"
+            path.write_text(json.dumps(config, ensure_ascii=False), encoding="utf-8")
+            findings = quality_check.run_checks(root, "web", path)
+            self.assertFalse(any(item.severity == "FAIL" for item in findings))
+            self.assertFalse(any(item.code == "UX001" for item in findings))
+
+            (public / "about.html").write_text('<html lang="ja"><body>概要</body></html>', encoding="utf-8")
+            findings = quality_check.run_checks(root, "web", path)
+            self.assertTrue(any(item.code == "WEB002" and item.severity == "FAIL" for item in findings))
+
 
 if __name__ == "__main__":
     unittest.main()

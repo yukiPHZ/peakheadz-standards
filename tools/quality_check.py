@@ -9,12 +9,16 @@ import json
 import re
 import sys
 from dataclasses import dataclass
+from html.parser import HTMLParser
 from pathlib import Path
 from typing import Any, Iterable
 
 
 SEVERITY_ORDER = {"FAIL": 0, "WARN": 1, "PASS": 2}
-TEXT_SUFFIXES = {".py", ".md", ".txt", ".bat", ".ps1", ".json", ".toml", ".ini"}
+TEXT_SUFFIXES = {
+    ".py", ".md", ".txt", ".bat", ".ps1", ".json", ".toml", ".ini",
+    ".html", ".css", ".js", ".mjs", ".cjs", ".xml", ".webmanifest",
+}
 DEFAULT_EXCLUDES = {".git", ".venv", "venv", "build", "dist", "__pycache__", "node_modules"}
 FORBIDDEN_CREDITS = {
     "vibe coding": re.compile(r"\bvibe[\s-]*cod(?:ing|ed)\b", re.IGNORECASE),
@@ -32,6 +36,30 @@ class Finding:
     code: str
     path: str
     message: str
+
+
+class VisibleHTMLParser(HTMLParser):
+    """Collect visible text without treating script/style source as user copy."""
+
+    def __init__(self) -> None:
+        super().__init__(convert_charrefs=True)
+        self.hidden_depth = 0
+        self.parts: list[str] = []
+
+    def handle_starttag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
+        if tag.casefold() in {"script", "style", "template"}:
+            self.hidden_depth += 1
+
+    def handle_endtag(self, tag: str) -> None:
+        if tag.casefold() in {"script", "style", "template"} and self.hidden_depth:
+            self.hidden_depth -= 1
+
+    def handle_data(self, data: str) -> None:
+        if not self.hidden_depth and data.strip():
+            self.parts.append(data)
+
+    def text(self) -> str:
+        return "\n".join(self.parts)
 
 
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
@@ -70,6 +98,17 @@ def configured_paths(target: Path, values: Any) -> list[Path]:
     if not isinstance(values, list):
         return []
     return [target / value for value in values if isinstance(value, str) and value.strip()]
+
+
+def configured_glob_paths(target: Path, values: Any) -> list[Path]:
+    if not isinstance(values, list):
+        return []
+    paths: list[Path] = []
+    for value in values:
+        if not isinstance(value, str) or not value.strip():
+            continue
+        paths.extend(path for path in target.glob(value) if path.is_file())
+    return paths
 
 
 def default_scan_paths(target: Path) -> list[Path]:
@@ -154,9 +193,40 @@ def add_required_text_findings(findings: list[Finding], target: Path, config: di
             findings.append(Finding("FAIL", "APP002", shown, f"{label}を確認できません: {exc}"))
             continue
         if item["text"] in text:
-            findings.append(Finding("PASS", "APP002", shown, f"{label}を確認しました"))
+            findings.append(Finding("PASS", "CORE004", shown, f"{label}を確認しました"))
         else:
-            findings.append(Finding("FAIL", "APP002", shown, f"{label}がありません"))
+            findings.append(Finding("FAIL", "CORE004", shown, f"{label}がありません"))
+
+
+def add_required_glob_text_findings(findings: list[Finding], target: Path, config: dict[str, Any]) -> None:
+    items = config.get("required_text_globs", [])
+    if not isinstance(items, list):
+        findings.append(Finding("FAIL", "CFG007", "peakheadz_quality.json", "required_text_globsは配列にしてください"))
+        return
+    for index, item in enumerate(items, start=1):
+        if not isinstance(item, dict) or not isinstance(item.get("glob"), str) or not isinstance(item.get("text"), str):
+            findings.append(Finding("FAIL", "CFG008", "peakheadz_quality.json", f"required_text_globs[{index}]が不正です"))
+            continue
+        pattern = item["glob"]
+        files = unique_existing_files(configured_glob_paths(target, [pattern]))
+        label = str(item.get("label") or item["text"])
+        if not files:
+            findings.append(Finding("FAIL", "WEB001", pattern, f"{label}の検査対象がありません"))
+            continue
+        expected = item["text"]
+        case_sensitive = bool(item.get("case_sensitive", True))
+        missing: list[str] = []
+        for path in files:
+            text = path.read_text(encoding="utf-8-sig", errors="replace")
+            found = expected in text if case_sensitive else expected.casefold() in text.casefold()
+            if not found:
+                missing.append(display_path(path, target))
+        if missing:
+            sample = ", ".join(missing[:5])
+            suffix = "" if len(missing) <= 5 else f" ほか{len(missing) - 5}件"
+            findings.append(Finding("FAIL", "WEB002", pattern, f"{label}がないfile: {sample}{suffix}"))
+        else:
+            findings.append(Finding("PASS", "WEB002", pattern, f"{label}を{len(files)} fileで確認しました"))
 
 
 def add_source_findings(
@@ -199,6 +269,10 @@ def add_source_findings(
                 visible_text = "\n".join(
                     node.value for node in ast.walk(tree) if isinstance(node, ast.Constant) and isinstance(node.value, str)
                 )
+        elif path.suffix.lower() == ".html":
+            parser = VisibleHTMLParser()
+            parser.feed(text)
+            visible_text = parser.text()
         internal = INTERNAL_TERMS.search(visible_text)
         if internal:
             findings.append(Finding("WARN", "UX001", shown, f"利用者向け文字列の内部用語候補: {internal.group(0)}"))
@@ -224,14 +298,18 @@ def run_checks(target: Path, profile: str, config_path: Path) -> list[Finding]:
     add_required_file_findings(findings, target, profile, config)
     if profile == "app":
         add_icon_findings(findings, target, config)
-        add_required_text_findings(findings, target, config)
+    add_required_text_findings(findings, target, config)
+    add_required_glob_text_findings(findings, target, config)
 
-    configured_scan = configured_paths(target, config.get("scan_paths"))
+    configured_scan = configured_paths(target, config.get("scan_paths")) + configured_glob_paths(target, config.get("scan_globs"))
     scan_paths = unique_existing_files(configured_scan or default_scan_paths(target))
     if not scan_paths:
         findings.append(Finding("WARN", "CORE003", ".", "text検査対象がありません"))
-    user_text_paths = unique_existing_files(configured_paths(target, config.get("user_text_paths")))
-    if profile == "app" and not user_text_paths:
+    user_text_paths = unique_existing_files(
+        configured_paths(target, config.get("user_text_paths"))
+        + configured_glob_paths(target, config.get("user_text_globs"))
+    )
+    if not user_text_paths:
         findings.append(Finding("WARN", "UX000", ".", "user_text_pathsが未宣言のためUI文章検査は限定的です"))
     add_source_findings(findings, target, scan_paths, user_text_paths)
 
