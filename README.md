@@ -13,7 +13,7 @@ PEAKHEADZ製品で繰り返し使う、開発・品質・文章・ブランド�
 
 - `common/`: 全製品に共通する作業・環境・文章・ブランド
 - `app/`: Windows / デスクトップアプリの共通仕様
-- `web/`: Web製品の品質、UI、footer、deployに共通する境界
+- `web/`: Web製品の品質、UI、footer、asset、deployに共通する境界
 - `tools/doctor.py`: 開発環境・リポジトリ構造・認証経路をprofile別に簡易診断
 - `tools/quality_check.py`: 製品をprofile別に検査
 - `tools/generate_ai_context.py`: 指定した正本見出しからAI用入口を生成
