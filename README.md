@@ -11,15 +11,20 @@ PEAKHEADZ製品で繰り返し使う、開発・品質・文章・ブランド�
 
 ## 構成
 
-- `common/`: 全製品に共通する作業・文章・ブランド
+- `common/`: 全製品に共通する作業・環境・文章・ブランド
 - `app/`: Windows / デスクトップアプリの共通仕様
 - `web/`: Web製品の品質、UI、footer、deployに共通する境界
+- `tools/doctor.py`: 開発環境・リポジトリ構造・認証経路をprofile別に簡易診断
 - `tools/quality_check.py`: 製品をprofile別に検査
 - `tools/generate_ai_context.py`: 指定した正本見出しからAI用入口を生成
 
 ## 基本コマンド
 
 ```powershell
+python tools/doctor.py --profile local
+python tools/doctor.py --profile github
+python tools/doctor.py --profile cloudflare
+python tools/doctor.py --profile all
 python tools/quality_check.py <product-root> --profile app
 python tools/quality_check.py <product-root> --profile web
 python tools/generate_ai_context.py <product-root>

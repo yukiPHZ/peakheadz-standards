@@ -5,7 +5,7 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from tools import generate_ai_context, quality_check
+from tools import doctor, generate_ai_context, quality_check
 
 
 class GenerateAIContextTests(unittest.TestCase):
@@ -110,6 +110,85 @@ class QualityCheckTests(unittest.TestCase):
             (public / "about.html").write_text('<html lang="ja"><body>概要</body></html>', encoding="utf-8")
             findings = quality_check.run_checks(root, "web", path)
             self.assertTrue(any(item.code == "WEB002" and item.severity == "FAIL" for item in findings))
+
+
+class DoctorTests(unittest.TestCase):
+    def test_local_check_standard_clone(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            (root / ".git").mkdir()
+
+            def mock_runner(cmd: Sequence[str], cwd: Path | None = None) -> tuple[int, str, str]:
+                if "status" in cmd:
+                    return 0, "", ""
+                if "--version" in cmd:
+                    return 0, "git version 2.49.0", ""
+                return 0, "", ""
+
+            items = doctor.check_local(root, runner=mock_runner, dev_root=root.parent)
+            self.assertTrue(any(i.name == "Workspace type" and i.severity == "PASS" for i in items))
+            self.assertTrue(any(i.name == "Git ownership" and i.severity == "PASS" for i in items))
+
+    def test_local_check_detects_worktree_and_dubious_ownership(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            (root / ".git").write_text("gitdir: /path/to/worktree\n", encoding="utf-8")
+
+            def mock_runner(cmd: Sequence[str], cwd: Path | None = None) -> tuple[int, str, str]:
+                if "status" in cmd:
+                    return 128, "", "fatal: detected dubious ownership in repository at '/path'"
+                if "--version" in cmd:
+                    return 0, "git version 2.49.0", ""
+                return 0, "", ""
+
+            items = doctor.check_local(root, runner=mock_runner, dev_root=root.parent)
+            self.assertTrue(any(i.name == "Workspace type" and i.severity == "WARN" for i in items))
+            self.assertTrue(any(i.name == "Git ownership" and i.severity == "FAIL" for i in items))
+            fail_item = [i for i in items if i.name == "Git ownership"][0]
+            self.assertIn("NTFS所有者", fail_item.remediation)
+
+    def test_github_check_auth_and_env_conflict(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+
+            def mock_runner(cmd: Sequence[str], cwd: Path | None = None) -> tuple[int, str, str]:
+                if cmd == ["gh", "--version"]:
+                    return 0, "gh version 2.92.0", ""
+                if cmd == ["gh", "auth", "status"]:
+                    return 0, "✓ Logged in to github.com account yukiPHZ (keyring)", ""
+                if "remote.origin.url" in cmd:
+                    return 0, "https://github.com/yukiPHZ/peakheadz-standards.git", ""
+                return 0, "", ""
+
+            # 1. Clean env
+            items = doctor.check_github(root, runner=mock_runner, env={})
+            self.assertTrue(any(i.name == "GitHub auth" and i.severity == "PASS" for i in items))
+            self.assertTrue(any(i.name == "Git remote" and i.severity == "PASS" for i in items))
+            self.assertTrue(any(i.name == "Auth conflict" and i.severity == "PASS" for i in items))
+
+            # 2. Env token conflict
+            items_conflict = doctor.check_github(root, runner=mock_runner, env={"GH_TOKEN": "secret"})
+            self.assertTrue(any(i.name == "Auth conflict" and i.severity == "WARN" for i in items_conflict))
+
+    def test_cloudflare_check_oauth_and_env_conflict(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+
+            def mock_runner(cmd: Sequence[str], cwd: Path | None = None) -> tuple[int, str, str]:
+                if any("version" in arg for arg in cmd):
+                    return 0, "4.91.0", ""
+                if any("whoami" in arg for arg in cmd):
+                    return 0, "You are logged in with an OAuth Token, associated with the email daleyuki@gmail.com.", ""
+                return 0, "", ""
+
+            # 1. Clean OAuth env
+            items = doctor.check_cloudflare(root, runner=mock_runner, env={})
+            self.assertTrue(any(i.name == "Cloudflare auth" and i.severity == "PASS" for i in items))
+            self.assertTrue(any(i.name == "Auth conflict" and i.severity == "PASS" for i in items))
+
+            # 2. Token conflict
+            items_conflict = doctor.check_cloudflare(root, runner=mock_runner, env={"CLOUDFLARE_API_TOKEN": "token"})
+            self.assertTrue(any(i.name == "Auth conflict" and i.severity == "WARN" for i in items_conflict))
 
 
 if __name__ == "__main__":
