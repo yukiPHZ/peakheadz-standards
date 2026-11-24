@@ -1,9 +1,13 @@
 from __future__ import annotations
 
+import contextlib
+import io
 import json
 import tempfile
 import unittest
 from pathlib import Path
+from typing import Sequence
+from unittest import mock
 
 from tools import doctor, generate_ai_context, quality_check
 
@@ -113,6 +117,9 @@ class QualityCheckTests(unittest.TestCase):
 
 
 class DoctorTests(unittest.TestCase):
+    def patched_which(self):
+        return mock.patch("tools.doctor.shutil.which", return_value="C:/fake/tool.exe")
+
     def test_local_check_standard_clone(self) -> None:
         with tempfile.TemporaryDirectory() as temp:
             root = Path(temp)
@@ -125,7 +132,8 @@ class DoctorTests(unittest.TestCase):
                     return 0, "git version 2.49.0", ""
                 return 0, "", ""
 
-            items = doctor.check_local(root, runner=mock_runner, dev_root=root.parent)
+            with self.patched_which():
+                items = doctor.check_local(root, runner=mock_runner, dev_root=root.parent)
             self.assertTrue(any(i.name == "Workspace type" and i.severity == "PASS" for i in items))
             self.assertTrue(any(i.name == "Git ownership" and i.severity == "PASS" for i in items))
 
@@ -141,7 +149,8 @@ class DoctorTests(unittest.TestCase):
                     return 0, "git version 2.49.0", ""
                 return 0, "", ""
 
-            items = doctor.check_local(root, runner=mock_runner, dev_root=root.parent)
+            with self.patched_which():
+                items = doctor.check_local(root, runner=mock_runner, dev_root=root.parent)
             self.assertTrue(any(i.name == "Workspace type" and i.severity == "WARN" for i in items))
             self.assertTrue(any(i.name == "Git ownership" and i.severity == "FAIL" for i in items))
             fail_item = [i for i in items if i.name == "Git ownership"][0]
@@ -160,15 +169,102 @@ class DoctorTests(unittest.TestCase):
                     return 0, "https://github.com/yukiPHZ/peakheadz-standards.git", ""
                 return 0, "", ""
 
-            # 1. Clean env
-            items = doctor.check_github(root, runner=mock_runner, env={})
-            self.assertTrue(any(i.name == "GitHub auth" and i.severity == "PASS" for i in items))
-            self.assertTrue(any(i.name == "Git remote" and i.severity == "PASS" for i in items))
-            self.assertTrue(any(i.name == "Auth conflict" and i.severity == "PASS" for i in items))
+            with self.patched_which():
+                # 1. Clean env
+                items = doctor.check_github(root, runner=mock_runner, env={})
+                self.assertTrue(any(i.name == "GitHub auth" and i.severity == "PASS" for i in items))
+                self.assertTrue(any(i.name == "Git remote" and i.severity == "PASS" for i in items))
+                self.assertTrue(any(i.name == "Auth conflict" and i.severity == "PASS" for i in items))
 
-            # 2. Env token conflict
-            items_conflict = doctor.check_github(root, runner=mock_runner, env={"GH_TOKEN": "secret"})
+                # 2. Env token conflict
+                items_conflict = doctor.check_github(root, runner=mock_runner, env={"GH_TOKEN": "secret"})
             self.assertTrue(any(i.name == "Auth conflict" and i.severity == "WARN" for i in items_conflict))
+
+    def test_github_cli_failure_is_fail(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+
+            def mock_runner(cmd: Sequence[str], cwd: Path | None = None) -> tuple[int, str, str]:
+                if cmd == ["gh", "--version"]:
+                    return 1, "", "gh is broken"
+                return 1, "", ""
+
+            with self.patched_which():
+                items = doctor.check_github(root, runner=mock_runner, env={})
+            self.assertTrue(any(i.name == "GitHub CLI" and i.severity == "FAIL" for i in items))
+
+    def test_remote_url_credentials_are_redacted(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            token = "ghp_example_token_value"
+            remote = f"https://x-access-token:{token}@github.com/yukiPHZ/sample.git"
+
+            def mock_runner(cmd: Sequence[str], cwd: Path | None = None) -> tuple[int, str, str]:
+                if cmd == ["gh", "--version"]:
+                    return 0, "gh version 2.92.0", ""
+                if cmd == ["gh", "auth", "status"]:
+                    return 0, "✓ Logged in to github.com account yukiPHZ (keyring)", ""
+                if "remote.origin.url" in cmd:
+                    return 0, remote, ""
+                return 0, "", ""
+
+            with self.patched_which():
+                items = doctor.check_github(root, runner=mock_runner, env={"GH_TOKEN": token})
+            rendered = doctor.render_report(items, "github")
+            self.assertNotIn(token, rendered)
+            self.assertIn("***@github.com", rendered)
+
+    def test_web_profile_checks_only_needed_services(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            (root / ".git").mkdir()
+
+            def make_runner(remote: str) -> doctor.CommandRunner:
+                def runner(cmd: Sequence[str], cwd: Path | None = None) -> tuple[int, str, str]:
+                    if cmd[:2] == ["git", "--version"]:
+                        return 0, "git version 2.49.0", ""
+                    if cmd[:2] == ["git", "status"]:
+                        return 0, "", ""
+                    if cmd[:3] == ["git", "config", "--get"]:
+                        return (0, remote, "") if remote else (1, "", "")
+                    if cmd[:2] == ["gh", "--version"]:
+                        return 0, "gh version 2.92.0", ""
+                    if cmd[:2] == ["gh", "auth"]:
+                        return 0, "✓ Logged in to github.com account yukiPHZ (keyring)", ""
+                    if "version" in cmd:
+                        return 0, "4.91.0", ""
+                    if "whoami" in cmd:
+                        return 0, "You are logged in with an OAuth Token, associated with the email daleyuki@gmail.com.", ""
+                    return 1, "", f"unexpected command: {cmd}"
+
+                return runner
+
+            with self.patched_which():
+                plain = doctor.check_web(root, runner=make_runner(""), env={})
+                self.assertFalse(any(i.category in {"github", "cloudflare"} for i in plain))
+
+                (root / "wrangler.toml").write_text('name = "sample"\n', encoding="utf-8")
+                configured = doctor.check_web(
+                    root,
+                    runner=make_runner("https://github.com/yukiPHZ/sample.git"),
+                    env={},
+                )
+            self.assertTrue(any(i.category == "github" for i in configured))
+            self.assertTrue(any(i.category == "cloudflare" for i in configured))
+
+    def test_main_exit_code_and_json(self) -> None:
+        cases = [
+            ([doctor.DoctorItem("PASS", "local", "Python runtime", "ok")], 0),
+            ([doctor.DoctorItem("FAIL", "local", "Git availability", "missing", "install git")], 1),
+        ]
+        for items, expected in cases:
+            buffer = io.StringIO()
+            with mock.patch.object(doctor, "run_doctor", return_value=items):
+                with contextlib.redirect_stdout(buffer):
+                    code = doctor.main(["--json"])
+            self.assertEqual(code, expected)
+            payload = json.loads(buffer.getvalue())
+            self.assertEqual(payload["passed"], expected == 0)
 
     def test_cloudflare_check_oauth_and_env_conflict(self) -> None:
         with tempfile.TemporaryDirectory() as temp:
@@ -181,13 +277,14 @@ class DoctorTests(unittest.TestCase):
                     return 0, "You are logged in with an OAuth Token, associated with the email daleyuki@gmail.com.", ""
                 return 0, "", ""
 
-            # 1. Clean OAuth env
-            items = doctor.check_cloudflare(root, runner=mock_runner, env={})
-            self.assertTrue(any(i.name == "Cloudflare auth" and i.severity == "PASS" for i in items))
-            self.assertTrue(any(i.name == "Auth conflict" and i.severity == "PASS" for i in items))
+            with self.patched_which():
+                # 1. Clean OAuth env
+                items = doctor.check_cloudflare(root, runner=mock_runner, env={})
+                self.assertTrue(any(i.name == "Cloudflare auth" and i.severity == "PASS" for i in items))
+                self.assertTrue(any(i.name == "Auth conflict" and i.severity == "PASS" for i in items))
 
-            # 2. Token conflict
-            items_conflict = doctor.check_cloudflare(root, runner=mock_runner, env={"CLOUDFLARE_API_TOKEN": "token"})
+                # 2. Token conflict
+                items_conflict = doctor.check_cloudflare(root, runner=mock_runner, env={"CLOUDFLARE_API_TOKEN": "token"})
             self.assertTrue(any(i.name == "Auth conflict" and i.severity == "WARN" for i in items_conflict))
 
 

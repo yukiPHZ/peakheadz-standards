@@ -11,6 +11,7 @@ import argparse
 import json
 import os
 import platform
+import re
 import shutil
 import subprocess
 import sys
@@ -18,8 +19,13 @@ from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Callable, Sequence
 
-SEVERITY_ORDER = {"FAIL": 0, "WARN": 1, "PASS": 2}
 CANONICAL_DEV_ROOT = Path("C:/Users/yukiz/devlop")
+URL_CREDENTIALS = re.compile(r"(?<=://)[^/@\s]+@")
+
+
+def redact_url(url: str) -> str:
+    """Hide embedded credentials such as user:token@ before a URL is displayed."""
+    return URL_CREDENTIALS.sub("***@", url)
 
 
 @dataclass(frozen=True)
@@ -194,8 +200,19 @@ def check_github(
         return items
 
     code, out, _ = runner(["gh", "--version"], target)
-    gh_version = out.splitlines()[0] if out else "installed"
-    items.append(DoctorItem("PASS", "github", "GitHub CLI", gh_version))
+    if code == 0:
+        gh_version = out.splitlines()[0] if out else "gh installed"
+        items.append(DoctorItem("PASS", "github", "GitHub CLI", gh_version))
+    else:
+        items.append(
+            DoctorItem(
+                "FAIL",
+                "github",
+                "GitHub CLI",
+                "gh --version の実行に失敗しました",
+                "GitHub CLIのインストール状態とPATHを確認してください",
+            )
+        )
 
     # 2. gh auth status (read-only)
     code, out, err = runner(["gh", "auth", "status"], target)
@@ -223,20 +240,21 @@ def check_github(
     code, out, _ = runner(["git", "config", "--get", "remote.origin.url"], target)
     if code == 0 and out:
         remote_url = out.strip()
+        shown_url = redact_url(remote_url)
         if remote_url.startswith("https://"):
-            items.append(DoctorItem("PASS", "github", "Git remote", f"標準HTTPSプロトコル: {remote_url}"))
+            items.append(DoctorItem("PASS", "github", "Git remote", f"標準HTTPSプロトコル: {shown_url}"))
         elif remote_url.startswith("git@") or remote_url.startswith("ssh://"):
             items.append(
                 DoctorItem(
                     "WARN",
                     "github",
                     "Git remote",
-                    f"SSHプロトコルが設定されています: {remote_url}",
+                    f"SSHプロトコルが設定されています: {shown_url}",
                     "PEAKHEADZの標準経路はHTTPSです。明示設定がない場合はHTTPSを推奨します",
                 )
             )
         else:
-            items.append(DoctorItem("WARN", "github", "Git remote", f"非標準リモート: {remote_url}"))
+            items.append(DoctorItem("WARN", "github", "Git remote", f"非標準リモート: {shown_url}"))
     else:
         items.append(DoctorItem("WARN", "github", "Git remote", "remote.origin.url が設定されていません"))
 
@@ -415,6 +433,10 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
 
 
 def main(argv: list[str] | None = None) -> int:
+    if hasattr(sys.stdout, "reconfigure"):
+        sys.stdout.reconfigure(encoding="utf-8")
+    if hasattr(sys.stderr, "reconfigure"):
+        sys.stderr.reconfigure(encoding="utf-8")
     args = parse_args(argv)
     target = args.target.resolve()
     try:

@@ -24,6 +24,7 @@ PEAKHEADZ製品で繰り返し使う、開発・品質・文章・ブランド�
 python tools/doctor.py --profile local
 python tools/doctor.py --profile github
 python tools/doctor.py --profile cloudflare
+python tools/doctor.py --profile web
 python tools/doctor.py --profile all
 python tools/quality_check.py <product-root> --profile app
 python tools/quality_check.py <product-root> --profile web
